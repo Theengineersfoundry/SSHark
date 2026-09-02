@@ -409,6 +409,14 @@ wss.on('connection', (ws: WebSocket) => {
         sshClient.on('error', (err) => {
           ws.send(JSON.stringify({ type: 'ERROR', error: err.message }));
         });
+        sshClient.on('close', () => {
+          sshStream = null;
+          ws.send(JSON.stringify({ type: 'DISCONNECTED' }));
+        });
+        sshClient.on('end', () => {
+          sshStream = null;
+          ws.send(JSON.stringify({ type: 'DISCONNECTED' }));
+        });
 
         let privateKey: string | undefined;
         if (privateKeyPath) {
@@ -416,7 +424,16 @@ wss.on('connection', (ws: WebSocket) => {
           if (privateKey) console.log(`[SSHark SSH] Loaded Private Key from ${privateKeyPath}`);
         }
         ws.send(JSON.stringify({ type: 'STATUS', message: `Connecting to ${username}@${host}:${port}...` }));
-        sshClient.connect({ host, port: port || 22, username, password: password || undefined, privateKey, readyTimeout: 10000 });
+        sshClient.connect({
+          host,
+          port: port || 22,
+          username,
+          password: password || undefined,
+          privateKey,
+          readyTimeout: 10000,
+          keepaliveInterval: 2500,
+          keepaliveCountMax: 2,
+        });
         return;
       }
 
