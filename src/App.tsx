@@ -18,6 +18,7 @@ import { Sidebar } from './components/Sidebar';
 import { SessionModal } from './components/SessionModal';
 import { TerminalTab } from './components/TerminalTab';
 import { DualPaneSFTPExplorer } from './components/DualPaneSFTPExplorer';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { SnippetDrawer } from './components/SnippetDrawer';
 import { CommandPalette } from './components/CommandPalette';
 import { WorkspaceModal } from './components/WorkspaceModal';
@@ -552,19 +553,22 @@ export const App: React.FC = () => {
               if (isSftpTab(tab)) {
                 return (
                   <div key={tab.id} className={`terminal-tab-pane${isActive ? ' is-active' : ''}`}>
-                    <DualPaneSFTPExplorer sshConfig={tab.sshConfig} />
+                    <ErrorBoundary fallbackTitle="SFTP Explorer Error">
+                      <DualPaneSFTPExplorer sshConfig={tab.sshConfig} />
+                    </ErrorBoundary>
                   </div>
                 );
               }
               return (
-                <TerminalTab
-                  key={tab.id}
-                  tab={tab}
-                  isActive={isActive}
-                  onUpdateTabStatus={handleUpdateTabStatus}
-                  onOpenSFTPTab={handleOpenSFTPTab}
-                  suspendTerminalFocus={modalOpen}
-                />
+                <ErrorBoundary key={tab.id} fallbackTitle="Terminal Error">
+                  <TerminalTab
+                    tab={tab}
+                    isActive={isActive}
+                    onUpdateTabStatus={handleUpdateTabStatus}
+                    onOpenSFTPTab={handleOpenSFTPTab}
+                    suspendTerminalFocus={modalOpen}
+                  />
+                </ErrorBoundary>
               );
             })}
             </div>

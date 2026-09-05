@@ -160,79 +160,18 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
   /** Bumped per local-shell connect attempt so stale DISCONNECTED events cannot overwrite status */
   const localConnectEpochRef = useRef(0);
   const connectSerialWebSocketRef = useRef<(term: Terminal, attempt?: number, silent?: boolean) => void>(() => {});
-  /** Wait for Clear-Host to finish before positioning its new prompt. */
-  const suppressHomeClearRef = useRef(false);
-  /** Timestamp until which auto-scroll is paused (after clear). */
-  const suppressScrollUntilRef = useRef(0);
-  /** Preserve the existing xterm screen while a replacement local PTY starts. */
-  const preserveLocalScreenRef = useRef(false);
-  const localStartupDataRef = useRef('');
-  const localStartupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const programmaticScrollRef = useRef(false);
   const pointerDownRef = useRef(false);
 
   const stayAtBottomIfPinned = (term: Terminal) => {
     if (!autoScrollRef.current) return;
     if (pointerDownRef.current) return;
-    if (Date.now() < suppressScrollUntilRef.current) return;
     programmaticScrollRef.current = true;
     term.scrollToBottom();
     requestAnimationFrame(() => { programmaticScrollRef.current = false; });
   };
 
-  const flushLocalStartupData = (term: Terminal) => {
-    if (localStartupTimerRef.current) {
-      clearTimeout(localStartupTimerRef.current);
-      localStartupTimerRef.current = null;
-    }
-    const startupData = localStartupDataRef.current;
-    localStartupDataRef.current = '';
-    preserveLocalScreenRef.current = false;
-    if (!startupData) return;
-
-    // A fresh ConPTY can replay screen initialization for its own blank screen.
-    // Do not let those sequences clear/home the xterm buffer retained by this tab.
-    const preservedData = startupData
-      .replace(/\x1bc/g, '')
-      .replace(/\x1b\[[?0-9;]*[HJf]/g, '');
-    term.write(preservedData);
-    stayAtBottomIfPinned(term);
-  };
-
   const writeIncomingTerminalData = (term: Terminal, raw: string) => {
-    if (preserveLocalScreenRef.current) {
-      localStartupDataRef.current += raw;
-      const plainStartup = localStartupDataRef.current
-        .replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, '')
-        .replace(/\x1b./g, '');
-      const hasShellPrompt =
-        /(?:PS\s+[^\r\n>]+>|[A-Za-z]:\\[^\r\n>]*>)\s*$/.test(plainStartup);
-
-      if (hasShellPrompt || localStartupDataRef.current.length >= 65536) {
-        flushLocalStartupData(term);
-      } else if (!localStartupTimerRef.current) {
-        localStartupTimerRef.current = setTimeout(() => flushLocalStartupData(term), 1500);
-      }
-      return;
-    }
-
-    if (suppressHomeClearRef.current) {
-      // After a clear: let Clear-Host escape sequences through (PTY cursor reset),
-      // but block auto-scroll. Once the prompt lands, scroll to top so it appears
-      // at the top of the blank screen.
-      const stripped = raw.replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, '').replace(/\x1b./g, '');
-      const hasPromptText = /PS\s+\S+>\s*$/.test(stripped);
-      term.write(raw);
-      if (hasPromptText) {
-        const wasClear = suppressScrollUntilRef.current > 0;
-        suppressHomeClearRef.current = false;
-        suppressScrollUntilRef.current = 0;
-        if (wasClear) {
-          term.scrollToTop();
-        }
-      }
-      return;
-    }
     term.write(raw);
     stayAtBottomIfPinned(term);
   };
@@ -322,13 +261,12 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
     const screen = term.element?.querySelector('.xterm-screen') as HTMLElement | null;
     if (!screen) return null;
 
-    const core = term as unknown as {
-      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } };
-    };
-    const cell = core._core?._renderService?.dimensions?.css?.cell;
-    if (cell && cell.width > 0 && cell.height > 0) {
-      return { screen, cellWidth: cell.width, cellHeight: cell.height };
-    }
+    try {
+      const cell = (term as any)._core?._renderService?.dimensions?.css?.cell;
+      if (cell && cell.width > 0 && cell.height > 0) {
+        return { screen, cellWidth: cell.width, cellHeight: cell.height };
+      }
+    } catch {}
 
     const rect = screen.getBoundingClientRect();
     if (term.cols <= 0 || term.rows <= 0 || rect.width <= 0 || rect.height <= 0) return null;
@@ -350,28 +288,30 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
       return;
     }
 
-    const xtermEl = term.element;
-    const metrics = getTermCellMetrics(term);
-    if (!xtermEl || !metrics) return;
+    try {
+      const xtermEl = term.element;
+      const metrics = getTermCellMetrics(term);
+      if (!xtermEl || !metrics) return;
 
-    const availWidth = xtermEl.clientWidth - XTERM_SCROLLBAR_GUTTER_PX;
-    const availHeight = xtermEl.clientHeight;
-    if (availWidth <= 0 || availHeight <= 0) return;
+      const availWidth = xtermEl.clientWidth - XTERM_SCROLLBAR_GUTTER_PX;
+      const availHeight = xtermEl.clientHeight;
+      if (availWidth <= 0 || availHeight <= 0) return;
 
-    // The WebView scrollbar overlays its content. Remove columns that would sit
-    // underneath it, and leave a little row slack for high-DPI rounding.
-    let cols = term.cols;
-    while (cols > 2 && cols * metrics.cellWidth > availWidth - 1) {
-      cols -= 1;
-    }
-    let rows = term.rows;
-    while (rows > 2 && rows * metrics.cellHeight > availHeight - 1) {
-      rows -= 1;
-    }
+      // The WebView scrollbar overlays its content. Remove columns that would sit
+      // underneath it, and leave a little row slack for high-DPI rounding.
+      let cols = term.cols;
+      while (cols > 2 && cols * metrics.cellWidth > availWidth - 1) {
+        cols -= 1;
+      }
+      let rows = term.rows;
+      while (rows > 2 && rows * metrics.cellHeight > availHeight - 1) {
+        rows -= 1;
+      }
 
-    if (cols !== term.cols || rows !== term.rows) {
-      term.resize(cols, rows);
-    }
+      if (cols !== term.cols || rows !== term.rows) {
+        term.resize(cols, rows);
+      }
+    } catch {}
   };
 
   const notifyTerminalResize = (term: Terminal) => {
@@ -1196,8 +1136,10 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
     }
 
     const fitAndNotify = () => {
-      fitTerminalToHost(term, fitAddon, terminalRef.current);
-      notifyTerminalResize(term);
+      try {
+        fitTerminalToHost(term, fitAddon, terminalRef.current);
+        notifyTerminalResize(term);
+      } catch {}
     };
 
     window.addEventListener('resize', fitAndNotify);
@@ -1237,7 +1179,6 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
       suppressAutoReconnectRef.current = true;
       hadSerialConnectionRef.current = false;
       if (autoReconnectTimerRef.current) clearTimeout(autoReconnectTimerRef.current);
-      if (localStartupTimerRef.current) clearTimeout(localStartupTimerRef.current);
       closeSerialSocket();
       term.dispose();
     };
@@ -1248,21 +1189,23 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
     const term = xtermRef.current;
     const beforeRows = term.rows;
     const beforeCols = term.cols;
-    fitTerminalToHost(term, fitAddonRef.current, terminalRef.current);
-    if (term.rows !== beforeRows || term.cols !== beforeCols) {
-      notifyTerminalResize(term);
-    }
+    try {
+      fitTerminalToHost(term, fitAddonRef.current, terminalRef.current);
+      if (term.rows !== beforeRows || term.cols !== beforeCols) {
+        notifyTerminalResize(term);
+      }
+    } catch {}
   }, [isActive, tab.id]);
 
   const wipeTerminal = (term: Terminal) => {
-    // For serial: 100% clean wipe (no prompt line preservation)
-    if (tab.protocol === 'serial') {
+    // For serial or disconnected tabs: 100% clean wipe (no prompt line preservation)
+    if (tab.protocol === 'serial' || tab.status !== 'connected') {
       term.clear();
       term.write('\x1b[2J\x1b[3J\x1b[H');
       return;
     }
 
-    // For SSH & Local Shell: retain exact previous behavior (preserving active prompt line at top)
+    // For SSH & Local Shell when connected: preserve active prompt line at top
     let lineIndex = term.buffer.active.baseY + term.buffer.active.cursorY;
     let promptLine = term.buffer.active.getLine(lineIndex)?.translateToString(true) || '';
     if (!promptLine.trim() && lineIndex > 0) {
@@ -1271,7 +1214,16 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
         promptLine = prev;
       }
     }
-    const cursorX = term.buffer.active.cursorX;
+
+    // Only preserve the prompt/path prefix (e.g. "PS C:\Users\LENOVO> "), not typed commands
+    const promptMatch = promptLine.match(SHELL_PROMPT_RE);
+    if (promptMatch) {
+      promptLine = promptMatch[0];
+    } else if (!SHELL_PROMPT_RE.test(promptLine)) {
+      promptLine = '';
+    }
+
+    const cursorX = promptLine.length;
 
     // Clear entire scrollback and screen, home cursor to row 1
     term.clear();
@@ -1280,9 +1232,7 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
     // Place the active prompt line cleanly at the top
     if (promptLine) {
       term.write(promptLine);
-      if (cursorX < promptLine.length) {
-        term.write(`\x1b[1;${cursorX + 1}H`);
-      }
+      term.write(`\x1b[1;${cursorX + 1}H`);
     } else if (tab.protocol === 'local' && !isTauriRuntime()) {
       term.write(`\x1b[36mPS C:\\Users\\Developer> \x1b[0m`);
     }
@@ -1291,17 +1241,13 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
   const handleClear = () => {
     const term = xtermRef.current;
     if (!term) return;
-    preserveLocalScreenRef.current = false;
-    localStartupDataRef.current = '';
-    if (localStartupTimerRef.current) {
-      clearTimeout(localStartupTimerRef.current);
-      localStartupTimerRef.current = null;
-    }
     if (hexIdleTimerRef.current) {
       window.clearTimeout(hexIdleTimerRef.current);
       hexIdleTimerRef.current = null;
     }
     hexPendingRef.current = [];
+    inputBufferRef.current = '';
+    hideInlineSuggestion();
     wipeTerminal(term);
   };
 
@@ -1309,13 +1255,10 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
     if (!isTauriRuntime()) return;
 
     const epoch = ++localConnectEpochRef.current;
-    if (localStartupTimerRef.current) {
-      clearTimeout(localStartupTimerRef.current);
-      localStartupTimerRef.current = null;
-    }
-    localStartupDataRef.current = '';
-    preserveLocalScreenRef.current =
-      term.buffer.active.baseY > 0 || term.buffer.active.cursorY > 0;
+
+    // Start with a clean screen so the shell prompt is always positioned at the top
+    term.clear();
+    term.write('\x1b[2J\x1b[3J\x1b[H');
 
     if (tauriUnsubRef.current) {
       tauriUnsubRef.current();
