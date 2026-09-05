@@ -1255,12 +1255,35 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
   }, [isActive, tab.id]);
 
   const wipeTerminal = (term: Terminal) => {
+    // For serial: 100% clean wipe (no prompt line preservation)
+    if (tab.protocol === 'serial') {
+      term.clear();
+      term.write('\x1b[2J\x1b[3J\x1b[H');
+      return;
+    }
+
+    // For SSH & Local Shell: retain exact previous behavior (preserving active prompt line at top)
+    let lineIndex = term.buffer.active.baseY + term.buffer.active.cursorY;
+    let promptLine = term.buffer.active.getLine(lineIndex)?.translateToString(true) || '';
+    if (!promptLine.trim() && lineIndex > 0) {
+      const prev = term.buffer.active.getLine(lineIndex - 1)?.translateToString(true) || '';
+      if (prev.trim()) {
+        promptLine = prev;
+      }
+    }
+    const cursorX = term.buffer.active.cursorX;
+
     // Clear entire scrollback and screen, home cursor to row 1
     term.clear();
     term.write('\x1b[2J\x1b[3J\x1b[H');
 
-    // Only restore simulated local prompt if in simulated browser-only local shell
-    if (tab.protocol === 'local' && !isTauriRuntime()) {
+    // Place the active prompt line cleanly at the top
+    if (promptLine) {
+      term.write(promptLine);
+      if (cursorX < promptLine.length) {
+        term.write(`\x1b[1;${cursorX + 1}H`);
+      }
+    } else if (tab.protocol === 'local' && !isTauriRuntime()) {
       term.write(`\x1b[36mPS C:\\Users\\Developer> \x1b[0m`);
     }
   };
