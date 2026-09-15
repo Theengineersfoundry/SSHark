@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Plus,
   X,
@@ -10,6 +10,8 @@ import {
   Sidebar as SidebarIcon,
   Code,
   Layers,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import type { Session, Snippet, TerminalTab as TabType, Workspace } from './types/terminal';
 import { SessionStore } from './services/sessionStore';
@@ -46,6 +48,59 @@ export const App: React.FC = () => {
   const [activeLayoutId, setActiveLayoutId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
+
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateTabScrollButtons = useCallback(() => {
+    const el = tabListRef.current;
+    if (!el) return;
+    const { scrollLeft, scrollWidth, clientWidth } = el;
+    setCanScrollLeft(scrollLeft > 2);
+    setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 2);
+  }, []);
+
+  useEffect(() => {
+    updateTabScrollButtons();
+    const el = tabListRef.current;
+    if (!el) return;
+    el.addEventListener('scroll', updateTabScrollButtons, { passive: true });
+    window.addEventListener('resize', updateTabScrollButtons);
+    return () => {
+      el.removeEventListener('scroll', updateTabScrollButtons);
+      window.removeEventListener('resize', updateTabScrollButtons);
+    };
+  }, [tabs, updateTabScrollButtons]);
+
+  useEffect(() => {
+    if (!activeTabId || !tabListRef.current) return;
+    const activeEl = tabListRef.current.querySelector('.tab-chip.is-active');
+    if (activeEl && typeof (activeEl as HTMLElement).scrollIntoView === 'function') {
+      (activeEl as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+    const timer = window.setTimeout(updateTabScrollButtons, 200);
+    return () => window.clearTimeout(timer);
+  }, [activeTabId, tabs, updateTabScrollButtons]);
+
+  const handleTabListWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY !== 0 && tabListRef.current) {
+      tabListRef.current.scrollLeft += e.deltaY;
+      updateTabScrollButtons();
+    }
+  };
+
+  const scrollTabsLeft = () => {
+    if (tabListRef.current) {
+      tabListRef.current.scrollBy({ left: -160, behavior: 'smooth' });
+    }
+  };
+
+  const scrollTabsRight = () => {
+    if (tabListRef.current) {
+      tabListRef.current.scrollBy({ left: 160, behavior: 'smooth' });
+    }
+  };
 
   const showToast = (message: string) => {
     setToast(message);
@@ -388,41 +443,73 @@ export const App: React.FC = () => {
           />
         )}
 
-        <div className="app-chrome-tabs" data-tauri-drag-region="false">
-          {tabs.map((tab) => {
-            const isActive = tab.id === activeTabId;
-            return (
-              <div
-                key={tab.id}
-                data-tauri-drag-region="false"
-                onClick={() => setActiveTabId(tab.id)}
-                className={`tab-chip${isActive ? ' is-active' : ''}`}
-                style={{
-                  background: isActive ? undefined : 'transparent',
-                  color: isActive ? undefined : 'var(--text-muted)',
-                }}
-              >
-                {isSftpTab(tab) ? (
-                  <FolderOpen className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--sftp)' }} />
-                ) : tab.protocol === 'ssh' ? (
-                  <SquareTerminal className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--ssh)' }} />
-                ) : tab.protocol === 'serial' ? (
-                  <Cpu className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--serial)' }} />
-                ) : (
-                  <TerminalIcon className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--local)' }} />
-                )}
-                <span className="truncate min-w-0">{tab.title}</span>
-                <button
-                  type="button"
-                  onClick={(e) => handleCloseTab(tab.id, e)}
-                  className="tab-chip-close"
-                  title="Close tab"
+        <div className="app-chrome-tabs-wrapper" data-tauri-drag-region>
+          {canScrollLeft && (
+            <button
+              type="button"
+              data-tauri-drag-region="false"
+              onClick={scrollTabsLeft}
+              className="tab-scroll-btn tab-scroll-btn--left"
+              title="Scroll tabs left"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          <div
+            ref={tabListRef}
+            className="app-chrome-tabs"
+            data-tauri-drag-region
+            onWheel={handleTabListWheel}
+          >
+            {tabs.map((tab) => {
+              const isActive = tab.id === activeTabId;
+              return (
+                <div
+                  key={tab.id}
+                  data-tauri-drag-region="false"
+                  onClick={() => setActiveTabId(tab.id)}
+                  className={`tab-chip${isActive ? ' is-active' : ''}`}
+                  style={{
+                    background: isActive ? undefined : 'transparent',
+                    color: isActive ? undefined : 'var(--text-muted)',
+                  }}
+                  title={tab.title}
                 >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            );
-          })}
+                  {isSftpTab(tab) ? (
+                    <FolderOpen className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--sftp)' }} />
+                  ) : tab.protocol === 'ssh' ? (
+                    <SquareTerminal className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--ssh)' }} />
+                  ) : tab.protocol === 'serial' ? (
+                    <Cpu className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--serial)' }} />
+                  ) : (
+                    <TerminalIcon className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--local)' }} />
+                  )}
+                  <span className="truncate min-w-0">{tab.title}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => handleCloseTab(tab.id, e)}
+                    className="tab-chip-close"
+                    title="Close tab"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {canScrollRight && (
+            <button
+              type="button"
+              data-tauri-drag-region="false"
+              onClick={scrollTabsRight}
+              className="tab-scroll-btn tab-scroll-btn--right"
+              title="Scroll tabs right"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="app-chrome-spacer" data-tauri-drag-region />
